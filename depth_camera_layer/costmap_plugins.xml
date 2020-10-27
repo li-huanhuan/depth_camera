@@ -1,0 +1,5 @@
+<library path="lib/libdepth_camera_layer">
+  <class type="depth_camera_layer::DepthCameraLayer" base_class_type="costmap_2d::Layer">
+    <description>A depth-camera-sensor based obstacle layer for costmap_2d</description>
+  </class>
+</library>

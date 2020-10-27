@@ -1,0 +1,11 @@
+<library path="lib/libdepth_image_slice_proc">
+
+  <class name="depth_image_slice_proc/point_cloud_xyz_slice"
+         type="depth_image_slice_proc::PointCloudXyzSliceNodelet"
+	 base_class_type="nodelet::Nodelet">
+    <description>
+      Nodelet to convert depth image to XYZ slice point cloud.
+    </description>
+  </class>
+
+</library>
