@@ -41,7 +41,7 @@
        tree. Useful if you are playing back recorded raw data from a bag, or are
        supplying a more accurate tf tree from calibration. -->
   <arg name="load_driver" default="true" />
-  <arg name="publish_tf" default="true" />
+  <arg name="publish_tf" default="false" />
   <!-- Processing Modules -->
   <arg name="rgb_processing"                  default="false"  />
   <arg name="debayer_processing"              default="false" />
@@ -127,6 +127,9 @@
        <param name="slice_z_min" value="0.03" />
        <param name="slice_z_max" value="0.30" />
        <param name="slice_leaf" value="0.01" />
+       <param name="tf_t_x" value="0.207" />
+       <param name="tf_t_y" value="0.0" />
+       <param name="tf_t_z" value="0.784" />
      </node>
 
   </group> <!-- camera -->
@@ -141,7 +144,7 @@
 
   <!--<node pkg="tf" type="static_transform_publisher" name="base_link_camera_link_broadcaster" args="0.165 0.065 0.315 0.015 0.01 0 /base_link /camera_link 25" />--> <!-- test -->
 
-  <node pkg="tf" type="static_transform_publisher" name="base_link_camera_link_broadcaster" args="0.207 0 0.784 0 0.712 0.09 /base_link /camera_link 25" /> <!-- xiao du robot -->
+  <!--<node pkg="tf" type="static_transform_publisher" name="base_link_camera_link_broadcaster" args="0.207 0 0.784 0 0.712 0.09 /base_link /camera_link 25" />--> <!-- xiao du robot -->
 
   <!--node pkg="tf" type="static_transform_publisher" name="base_link_camera_link_broadcaster" args="0.2004 0.0045 0.8553 0 1.0 0 /base_link /camera_link 25" /--> <!-- 送货 robot -->
 

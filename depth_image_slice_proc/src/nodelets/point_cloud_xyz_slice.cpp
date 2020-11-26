@@ -16,6 +16,7 @@
 #include <pcl/segmentation/sac_segmentation.h>
 #include <pcl/filters/extract_indices.h>
 #include <Eigen/Geometry>
+#include <tf/transform_broadcaster.h>
 
 namespace depth_image_slice_proc {
 
@@ -46,14 +47,23 @@ class PointCloudXyzSliceNodelet : public nodelet::Nodelet
 
   image_geometry::PinholeCameraModel model_;
 
-  Eigen::Matrix4f baseTcloud_eigen_;
   SliceParam slice_param_;
+  ros::Time compute_camera_tf_time_;
+  tf::StampedTransform transform_;
+  Eigen::Matrix4f baseTcloud_eigen_;
+  tf::TransformBroadcaster broadcaster_;
 
   virtual void onInit();
 
   void getBaseToCameraTF(Eigen::Matrix4f& baseTcloud_eigen,SliceParam slice_param);
 
   void connectCb();
+
+  Eigen::Matrix3f hat(Eigen::Vector3f w);
+
+  Eigen::Matrix3f computeRotationMatrix(Eigen::Vector3f vec_n, Eigen::Vector3f Z);
+
+  tf::Quaternion computeDepthCameraOrientation(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_plane);
 
   void depthCb(const sensor_msgs::ImageConstPtr& depth_msg, const sensor_msgs::CameraInfoConstPtr& info_msg);
 };
@@ -73,7 +83,19 @@ void PointCloudXyzSliceNodelet::onInit()
   private_nh.param("slice_z_max", slice_param_.offset_z_max, 0.30);
   private_nh.param("size_leaf", slice_param_.size_leaf, 0.01);
 
-  getBaseToCameraTF(baseTcloud_eigen_, slice_param_);
+  double tf_t_x, tf_t_y, tf_t_z;
+  while(private_nh.hasParam("tf_t_x"))
+  {
+    ROS_WARN("The depth camera layer is waiting for TF conversion parameters.:%s",private_nh.getNamespace().c_str());
+    ros::Duration(1).sleep();
+  }
+  private_nh.param("tf_t_x", tf_t_x, 0.207);
+  private_nh.param("tf_t_y", tf_t_y, 0.0);
+  private_nh.param("tf_t_z", tf_t_z, 0.8);
+
+  transform_.setOrigin(tf::Vector3(tf_t_x, tf_t_y, tf_t_z));
+
+  compute_camera_tf_time_ = ros::Time::now() - ros::Duration(100);
 
   // Monitor whether anyone is subscribed to the output
   ros::SubscriberStatusCallback connect_cb = boost::bind(&PointCloudXyzSliceNodelet::connectCb, this);
@@ -81,45 +103,6 @@ void PointCloudXyzSliceNodelet::onInit()
   // Make sure we don't enter connectCb() between advertising and assigning to pub_point_cloud_
   boost::lock_guard<boost::mutex> lock(connect_mutex_);
   pub_point_slice_ = nh.advertise<sensor_msgs::PointCloud2>("cloud_slice", 1, connect_cb, connect_cb);
-}
-
-void PointCloudXyzSliceNodelet::getBaseToCameraTF(Eigen::Matrix4f& baseTcloud_eigen, SliceParam slice_param)
-{
-  // get transformation from base frame to depth camera frame;
-  tf::TransformListener* tf_ = new tf::TransformListener(ros::Duration(10));
-  tf::StampedTransform transform;
-
-  while(ros::ok())
-  {
-    if(tf_->waitForTransform(slice_param.frame_base, ros::Time::now(), slice_param.frame_depth_cam, ros::Time::now(), slice_param.frame_depth_cam, ros::Duration(1)))
-    {
-      tf_->lookupTransform(slice_param.frame_base,slice_param.frame_depth_cam,ros::Time::now(),transform);
-      break;
-    }
-
-    ROS_WARN("PointCloudXyzSliceNodelet frame %s to %s unavailable",slice_param_.frame_base.c_str(),slice_param_.frame_depth_cam.c_str());
-    ros::Duration(0.5).sleep();
-  }
-
-  delete tf_;
-  tf_ = nullptr;
-
-  // transform the cloud of obstacle to base frame;
-  baseTcloud_eigen.setIdentity();
-  tf::Quaternion q = transform.getRotation();
-  baseTcloud_eigen.block(0, 0, 3, 3) = Eigen::Quaternionf(q.w(), q.x(), q.y(),q.z()).toRotationMatrix();
-  baseTcloud_eigen(0, 3) = transform.getOrigin().getX();
-  baseTcloud_eigen(1, 3) = transform.getOrigin().getY();
-  baseTcloud_eigen(2, 3) = transform.getOrigin().getZ();
-
-  std::cout << "baseTdepth:" << std::endl;
-  std::cout << "Tx:" << transform.getOrigin().getX() << std::endl;
-  std::cout << "Ty:" << transform.getOrigin().getY() << std::endl;
-  std::cout << "Tz:" << transform.getOrigin().getZ() << std::endl;
-  std::cout << "Rx:" << transform.getRotation().getX() << std::endl;
-  std::cout << "Ry:" << transform.getRotation().getY() << std::endl;
-  std::cout << "Rz:" << transform.getRotation().getZ() << std::endl;
-  std::cout << "Rw:" << transform.getRotation().getW() << std::endl;
 }
 
 // Handles (un)subscribing when clients (un)subscribe
@@ -137,8 +120,87 @@ void PointCloudXyzSliceNodelet::connectCb()
   }
 }
 
-void PointCloudXyzSliceNodelet::depthCb(const sensor_msgs::ImageConstPtr& depth_msg,
-                                        const sensor_msgs::CameraInfoConstPtr& info_msg)
+Eigen::Matrix3f PointCloudXyzSliceNodelet::hat(Eigen::Vector3f w)
+{
+  Eigen::Matrix3f W = Eigen::Matrix3f::Zero();
+
+  W(1, 2) = -1 * w[0];
+  W(0, 2) = w[1];
+  W(0, 1) = -1 * w[2];
+
+  W(2, 1) = -1 * W(1, 2);
+  W(2, 0) = -1 * W(0, 2);
+  W(1, 0) = -1 * W(0, 1);
+
+  return W;
+}
+
+Eigen::Matrix3f PointCloudXyzSliceNodelet::computeRotationMatrix(Eigen::Vector3f vec_n, Eigen::Vector3f Z)
+{
+  Eigen::Matrix3f R;
+  Eigen::Vector3f cross = vec_n.cross(Z);
+  Eigen::Vector3f w = cross / (cross.norm());
+  Eigen::Matrix3f w_hat = hat(w);
+
+  float rot_angle = std::acos(vec_n.dot(Z) / (vec_n.norm()));
+
+  R = Eigen::Matrix3f::Identity() + w_hat * std::sin(rot_angle) + w_hat * w_hat * (1 - cos(rot_angle));
+
+  return R;
+}
+
+tf::Quaternion PointCloudXyzSliceNodelet::computeDepthCameraOrientation(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_plane)
+{
+  tf::Quaternion q_baseTcam;
+
+  // compute the normal vector for the plane;
+  int N = cloud_plane->points.size();
+  Eigen::MatrixXf X = Eigen::MatrixXf::Zero(3, N);
+  for (int k = 0; k < N; k++)
+  {
+    pcl::PointXYZ &p = cloud_plane->points[k];
+    X(0, k) = p.x;
+    X(1, k) = p.y;
+    X(2, k) = p.z;
+  }
+
+  Eigen::Vector3f mean(X.row(0).sum() / N, X.row(1).sum() / N, X.row(2).sum() / N);
+
+  Eigen::MatrixXf X_ = Eigen::MatrixXf::Zero(3, N);
+  for (int k = 0; k < N; k++)
+  {
+    X_.col(k) = X.col(k) - mean;
+  }
+  Eigen::Matrix3f cov;
+  cov = X_ * X_.transpose();
+
+  Eigen::JacobiSVD<Eigen::Matrix3f> svd(cov, Eigen::ComputeFullU | Eigen::ComputeFullV);
+
+  Eigen::Vector3f lambda = svd.singularValues();
+  Eigen::Matrix3f U = svd.matrixU();
+  Eigen::Vector3f vec_in_plane = U.col(0);
+  Eigen::Vector3f vec_n = U.col(2);
+  vec_n *= -1;
+
+  // compute the rotation matrix from the plane normal vector to z-axis of base frame;
+  Eigen::Vector3f Z(0, 0, 1);
+  Eigen::Matrix3f R = computeRotationMatrix(vec_n, Z);
+
+  Eigen::Quaternionf q_R(R);
+  tf::Transform T_z_upwards;
+  T_z_upwards.setRotation(tf::Quaternion(q_R.x(), q_R.y(), q_R.z(), q_R.w()));
+  tf::Transform T_x_forwards;
+  T_x_forwards.setRotation(tf::createQuaternionFromRPY(0, 0, -M_PI * 0.5));
+  tf::Transform T_rot = T_x_forwards * T_z_upwards;
+
+  tf::Quaternion q_z_forwards(q_R.x(), q_R.y(), q_R.z(), q_R.w());
+  tf::Quaternion q_y_forwards = tf::createQuaternionFromYaw(-M_PI * 0.5);
+  q_baseTcam = q_y_forwards * q_z_forwards;
+
+  return q_baseTcam;
+}
+
+void PointCloudXyzSliceNodelet::depthCb(const sensor_msgs::ImageConstPtr& depth_msg, const sensor_msgs::CameraInfoConstPtr& info_msg)
 {
   sensor_msgs::PointCloud2::Ptr cloud_msg(new sensor_msgs::PointCloud2);
   cloud_msg->header = depth_msg->header;
@@ -225,12 +287,26 @@ void PointCloudXyzSliceNodelet::depthCb(const sensor_msgs::ImageConstPtr& depth_
   extract_indices_plane.setInputCloud(cloud_data);
   extract_indices_plane.setIndices(inliers);
 
-  /********************
-  // 过滤出来的地面;
-  extract_indices_plane.setNegative(false);
-  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_plane(new pcl::PointCloud<pcl::PointXYZ>());
-  extract_indices_plane.filter(*cloud_plane);
-  *******************/
+  if( (ros::Time::now().toSec() - compute_camera_tf_time_.toSec()) >= 60)
+  {
+    ROS_INFO_ONCE("pub_tf_inc:%f",ros::Time::now().toSec() - compute_camera_tf_time_.toSec());
+    // 过滤出来的地面;
+    extract_indices_plane.setNegative(false);
+    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_plane(new pcl::PointCloud<pcl::PointXYZ>());
+    extract_indices_plane.filter(*cloud_plane);
+    tf::Quaternion tf_qua = computeDepthCameraOrientation(cloud_plane);
+    transform_.setRotation(tf_qua);
+
+    // transform the cloud of obstacle to base frame;
+    baseTcloud_eigen_.setIdentity();
+    baseTcloud_eigen_.block(0, 0, 3, 3) = Eigen::Quaternionf(tf_qua.getW(), tf_qua.getX(), tf_qua.getY(),tf_qua.getZ()).toRotationMatrix();
+    baseTcloud_eigen_(0, 3) = transform_.getOrigin().getX();
+    baseTcloud_eigen_(1, 3) = transform_.getOrigin().getY();
+    baseTcloud_eigen_(2, 3) = transform_.getOrigin().getZ();
+
+    compute_camera_tf_time_ = ros::Time::now();
+  }
+  broadcaster_.sendTransform(tf::StampedTransform(transform_, depth_msg->header.stamp, this->slice_param_.frame_base, depth_msg->header.frame_id));
 
   // 过滤掉地面之后;
   extract_indices_plane.setNegative(true);
