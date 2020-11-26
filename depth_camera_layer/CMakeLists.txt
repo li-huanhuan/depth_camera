@@ -12,6 +12,9 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
   tf2_geometry_msgs
   message_filters
+  tf2
+  tf2_ros
+  robot_msg
 )
 
 find_package(Boost REQUIRED COMPONENTS system thread)
@@ -37,6 +40,9 @@ catkin_package(
       sensor_msgs
       tf2_geometry_msgs
       message_filters
+      tf2
+      tf2_ros
+      robot_msg
     LIBRARIES
       depth_camera_layer
     DEPENDS

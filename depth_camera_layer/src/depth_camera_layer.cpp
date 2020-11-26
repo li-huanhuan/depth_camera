@@ -24,16 +24,63 @@ DepthCameraLayer::~DepthCameraLayer()
     delete this->dsrv_;
     this->dsrv_ = nullptr;
   }
-  if(this->sub_ptr_ != nullptr)
-  {
-    delete sub_ptr_;
-    sub_ptr_ = nullptr;
-  }
   if(this->notifiers_ptr_ != nullptr)
   {
     delete notifiers_ptr_;
     notifiers_ptr_ = nullptr;
   }
+  if(this->sub_ptr_ != nullptr)
+  {
+    delete sub_ptr_;
+    sub_ptr_ = nullptr;
+  }
+  if(this->nh_)
+  {
+    delete nh_;
+    nh_ = nullptr;
+  }
+}
+
+void DepthCameraLayer::onInitialize()
+{
+  rolling_window_ = layered_costmap_->isRolling();
+  global_frame_ = layered_costmap_->getGlobalFrameID();
+  default_value_ = costmap_2d::NO_INFORMATION;
+  matchSize();
+  is_build_ = false;
+  rec_flag_ = false;
+  current_ = true;
+  last_receive_msg_time_sec_ = ros::Time::now().toSec();
+
+  nh_ = new ros::NodeHandle("~/" + name_);
+
+  nh_->param<bool>("enabled", enabled_, bool());
+  nh_->param("topic_name", topic_name_, std::string());
+  nh_->param("sensor_frame", sensor_frame_, std::string(""));
+  nh_->param("obstacle_keep_time", obstacle_keep_time_, 0.0);
+  nh_->param("min_obstacle_height", min_obstacle_height_, 0.0);
+  nh_->param("max_obstacle_height", max_obstacle_height_, 2.0);
+  nh_->param("min_obstacle_range", min_obstacle_range_, 0.0);
+  nh_->param("max_obstacle_range", max_obstacle_range_, 2.0);
+  nh_->param("expected_update_rate", expected_update_rate_, 0.0);
+
+  ros::NodeHandle g_nh;
+
+  if(topic_name_ == "")
+    ROS_ERROR("depth camera layer point cloud topic is empty.Please reset parameters:topic_name and restart.");
+  else
+  {
+    sub_ptr_ = new message_filters::Subscriber< sensor_msgs::PointCloud2 >(g_nh, topic_name_, 1);
+    notifiers_ptr_ = new tf2_ros::MessageFilter<sensor_msgs::PointCloud2>(*sub_ptr_, *tf_, global_frame_, 1, g_nh);
+    notifiers_ptr_->registerCallback(boost::bind(&DepthCameraLayer::pointCloud2Callback, this,_1));
+  }
+
+  sub_slam_mode_ = g_nh.subscribe<robot_msg::SlamStatus>("/slam_status",1,&DepthCameraLayer::slamStatusCallBack,this);
+
+  dsrv_ = new dynamic_reconfigure::Server<depth_camera_layer::DepthCameraLayerConfig>(*nh_);
+  dynamic_reconfigure::Server<depth_camera_layer::DepthCameraLayerConfig>::CallbackType cb =
+    boost::bind(&DepthCameraLayer::reconfigureCB, this, _1, _2);
+  dsrv_->setCallback(cb);
 }
 
 void DepthCameraLayer::reconfigureCB(depth_camera_layer::DepthCameraLayerConfig &config, uint32_t level)
@@ -49,6 +96,8 @@ void DepthCameraLayer::reconfigureCB(depth_camera_layer::DepthCameraLayerConfig 
   if(enabled_ != config.enabled)
   {
     enabled_ = config.enabled;
+    if(this->is_build_)
+      return;
     if(enabled_)
     {
       reset();
@@ -58,45 +107,6 @@ void DepthCameraLayer::reconfigureCB(depth_camera_layer::DepthCameraLayerConfig 
       deactivate();
     }
   }
-}
-
-void DepthCameraLayer::onInitialize()
-{
-  rolling_window_ = layered_costmap_->isRolling();
-  global_frame_ = layered_costmap_->getGlobalFrameID();
-  default_value_ = costmap_2d::NO_INFORMATION;
-  matchSize();
-  rec_flag_ = false;
-  current_ = true;
-  last_receive_msg_time_sec_ = ros::Time::now().toSec();
-
-  ros::NodeHandle nh("~/" + name_);
-
-  nh.param<bool>("enabled", enabled_, bool());
-  nh.param("topic_name", topic_name_, std::string());
-  nh.param("sensor_frame", sensor_frame_, std::string(""));
-  nh.param("obstacle_keep_time", obstacle_keep_time_, 0.0);
-  nh.param("min_obstacle_height", min_obstacle_height_, 0.0);
-  nh.param("max_obstacle_height", max_obstacle_height_, 2.0);
-  nh.param("min_obstacle_range", min_obstacle_range_, 0.0);
-  nh.param("max_obstacle_range", max_obstacle_range_, 2.0);
-  nh.param("expected_update_rate", expected_update_rate_, 0.0);
-
-  ros::NodeHandle g_nh;
-
-  if(topic_name_ == "")
-    ROS_ERROR("depth camera layer point cloud topic is empty.Please reset parameters:topic_name and restart.");
-  else
-  {
-    sub_ptr_ = new message_filters::Subscriber< sensor_msgs::PointCloud2 >(g_nh, topic_name_, 1);
-    notifiers_ptr_ = new tf2_ros::MessageFilter<sensor_msgs::PointCloud2>(*sub_ptr_, *tf_, global_frame_, 1, g_nh);
-    notifiers_ptr_->registerCallback(boost::bind(&DepthCameraLayer::pointCloud2Callback, this,_1));
-  }
-
-  dsrv_ = new dynamic_reconfigure::Server<depth_camera_layer::DepthCameraLayerConfig>(nh);
-  dynamic_reconfigure::Server<depth_camera_layer::DepthCameraLayerConfig>::CallbackType cb =
-    boost::bind(&DepthCameraLayer::reconfigureCB, this, _1, _2);
-  dsrv_->setCallback(cb);
 }
 
 void DepthCameraLayer::clearHistoryObs()
@@ -249,10 +259,29 @@ void DepthCameraLayer::pointCloud2Callback(const sensor_msgs::PointCloud2ConstPt
   global_cloud.header.stamp = cloud.header.stamp;
   receive_msg_interval_time_sec_ = ros::Time::now().toSec() - last_receive_msg_time_sec_;
   last_receive_msg_time_sec_ = ros::Time::now().toSec();
-  receive_message_mutex_.lock();
+  boost::mutex::scoped_lock lock(receive_message_mutex_);
   rec_point_cloud_ = global_cloud;
-  receive_message_mutex_.unlock();
   rec_flag_ = true;
+}
+
+void DepthCameraLayer::slamStatusCallBack(const robot_msg::SlamStatus::ConstPtr &msg)
+{
+  bool flag = false;
+  if(msg->status == "building")
+    flag = true;
+  if(flag != is_build_)
+  {
+    is_build_ = flag;
+    std::cout << "depth camera layer::isbuild:" << is_build_ << std::endl;
+    if(is_build_)
+    {
+      deactivate();
+    }
+    else if(enabled_)
+    {
+      reset();
+    }
+  }
 }
 
 void DepthCameraLayer::updateBounds(double robot_x, double robot_y, double robot_yaw,
@@ -284,10 +313,12 @@ void DepthCameraLayer::updateBounds(double robot_x, double robot_y, double robot
     current_ = true;
   }
 
-  do_message_mutex_.lock();
-  const sensor_msgs::PointCloud2 cloud = rec_point_cloud_;
-  do_message_mutex_.unlock();
-  rec_flag_ = false;
+  sensor_msgs::PointCloud2 cloud;
+  {
+    boost::mutex::scoped_lock lock(do_message_mutex_);
+    cloud = rec_point_cloud_;
+    rec_flag_ = false;
+  }
 
   // 通过最新传感器数据标记指障碍物
   if(cloud.fields.size() != 3)
@@ -320,7 +351,7 @@ void DepthCameraLayer::updateBounds(double robot_x, double robot_y, double robot
     }
 
     // compute the squared distance from the hitpoint to the pointcloud's origin
-    double sq_dist = sqrt( (px-robot_x) * (px-robot_x) + (py-robot_y) * (py-robot_x) );
+    double sq_dist = sqrt( (px-robot_x) * (px-robot_x) + (py-robot_y) * (py-robot_y) );
     if (sq_dist >= max_obstacle_range_ || sq_dist <= min_obstacle_range_)
     {
       continue;

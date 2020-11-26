@@ -122,7 +122,7 @@
 
        <param name="frame_base" value="base_link" />
        <param name="frame_depth_cam" value="camera_rgb_optical_frame" />
-       <param name="slice_x" value="1.0" />
+       <param name="slice_x" value="1.5" />
        <param name="slice_y" value="1.0" />
        <param name="slice_z_min" value="0.03" />
        <param name="slice_z_max" value="0.30" />
@@ -137,6 +137,12 @@
     <arg name="camera" value="$(arg camera)" />
   </include>
 
-  <node pkg="tf" type="static_transform_publisher" name="base_link_camera_link_broadcaster" args="0.165 0.065 0.315 0.015 0.01 0 /base_link /camera_link 25" />
+  <!--<node pkg="tf" type="static_transform_publisher" name="base_link_camera_link_broadcaster" args="0 0 0.7 0 0 0 /base_link /camera_link 25" />--> <!-- test -->
+
+  <!--<node pkg="tf" type="static_transform_publisher" name="base_link_camera_link_broadcaster" args="0.165 0.065 0.315 0.015 0.01 0 /base_link /camera_link 25" />--> <!-- test -->
+
+  <node pkg="tf" type="static_transform_publisher" name="base_link_camera_link_broadcaster" args="0.207 0 0.784 0 0.712 0.09 /base_link /camera_link 25" /> <!-- xiao du robot -->
+
+  <!--node pkg="tf" type="static_transform_publisher" name="base_link_camera_link_broadcaster" args="0.2004 0.0045 0.8553 0 1.0 0 /base_link /camera_link 25" /--> <!-- 送货 robot -->
 
 </launch>

@@ -15,6 +15,8 @@
 #include <string>
 #include <vector>
 #include <utility>
+#include "robot_msg/SlamStatus.h"
+#include "boost/thread/mutex.hpp"
 
 namespace depth_camera_layer
 {
@@ -43,6 +45,7 @@ public:
 private:
 
   void pointCloud2Callback(const sensor_msgs::PointCloud2ConstPtr& msg);
+  void slamStatusCallBack(const robot_msg::SlamStatus::ConstPtr& msg);
   void clearHistoryObs();
   bool getSensor2GlobalFrameTf(std::string sensor_frame, geometry_msgs::TransformStamped& sensor_frame_to_global_frame);
   void updateWithMax(costmap_2d::Costmap2D& master_grid, int min_i, int min_j, int max_i, int max_j);
@@ -59,17 +62,22 @@ private:
   std::string topic_name_ = "";
   std::string sensor_frame_ = "";
 
+  ros::NodeHandle* nh_;
+  bool is_build_;
   bool rec_flag_;
   bool rolling_window_;
   double last_receive_msg_time_sec_;
   double receive_msg_interval_time_sec_;
   std::string global_frame_;
+
+  ros::Subscriber sub_slam_mode_;
   message_filters::Subscriber<sensor_msgs::PointCloud2>* sub_ptr_ = nullptr;
   tf2_ros::MessageFilter<sensor_msgs::PointCloud2>* notifiers_ptr_ = nullptr;
+
   boost::mutex clear_mutex_;
   boost::mutex set_params_mutex_;
-  boost::recursive_mutex receive_message_mutex_;
-  boost::recursive_mutex do_message_mutex_;
+  boost::mutex receive_message_mutex_;
+  boost::mutex do_message_mutex_;
   sensor_msgs::PointCloud2 rec_point_cloud_;
   std::vector< MarkerPoints > marker_points_buffer_;
 
