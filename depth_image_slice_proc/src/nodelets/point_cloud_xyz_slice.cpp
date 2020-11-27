@@ -47,6 +47,8 @@ class PointCloudXyzSliceNodelet : public nodelet::Nodelet
 
   image_geometry::PinholeCameraModel model_;
 
+  double adjustment_range_;
+  bool first_compute_;
   SliceParam slice_param_;
   ros::Time compute_camera_tf_time_;
   tf::StampedTransform transform_;
@@ -84,7 +86,7 @@ void PointCloudXyzSliceNodelet::onInit()
   private_nh.param("size_leaf", slice_param_.size_leaf, 0.01);
 
   double tf_t_x, tf_t_y, tf_t_z;
-  while(private_nh.hasParam("tf_t_x"))
+  while(!private_nh.hasParam("tf_t_x"))
   {
     ROS_WARN("The depth camera layer is waiting for TF conversion parameters.:%s",private_nh.getNamespace().c_str());
     ros::Duration(1).sleep();
@@ -95,6 +97,8 @@ void PointCloudXyzSliceNodelet::onInit()
 
   transform_.setOrigin(tf::Vector3(tf_t_x, tf_t_y, tf_t_z));
 
+  adjustment_range_ = M_PI/18;
+  first_compute_ = true;
   compute_camera_tf_time_ = ros::Time::now() - ros::Duration(100);
 
   // Monitor whether anyone is subscribed to the output
@@ -187,11 +191,11 @@ tf::Quaternion PointCloudXyzSliceNodelet::computeDepthCameraOrientation(pcl::Poi
   Eigen::Matrix3f R = computeRotationMatrix(vec_n, Z);
 
   Eigen::Quaternionf q_R(R);
-  tf::Transform T_z_upwards;
-  T_z_upwards.setRotation(tf::Quaternion(q_R.x(), q_R.y(), q_R.z(), q_R.w()));
-  tf::Transform T_x_forwards;
-  T_x_forwards.setRotation(tf::createQuaternionFromRPY(0, 0, -M_PI * 0.5));
-  tf::Transform T_rot = T_x_forwards * T_z_upwards;
+//  tf::Transform T_z_upwards;
+//  T_z_upwards.setRotation(tf::Quaternion(q_R.x(), q_R.y(), q_R.z(), q_R.w()));
+//  tf::Transform T_x_forwards;
+//  T_x_forwards.setRotation(tf::createQuaternionFromRPY(0, 0, -M_PI * 0.5));
+//  tf::Transform T_rot = T_x_forwards * T_z_upwards;
 
   tf::Quaternion q_z_forwards(q_R.x(), q_R.y(), q_R.z(), q_R.w());
   tf::Quaternion q_y_forwards = tf::createQuaternionFromYaw(-M_PI * 0.5);
@@ -289,22 +293,47 @@ void PointCloudXyzSliceNodelet::depthCb(const sensor_msgs::ImageConstPtr& depth_
 
   if( (ros::Time::now().toSec() - compute_camera_tf_time_.toSec()) >= 60)
   {
-    ROS_INFO_ONCE("pub_tf_inc:%f",ros::Time::now().toSec() - compute_camera_tf_time_.toSec());
     // 过滤出来的地面;
     extract_indices_plane.setNegative(false);
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_plane(new pcl::PointCloud<pcl::PointXYZ>());
     extract_indices_plane.filter(*cloud_plane);
+
+    if(first_compute_ && cloud_plane->size() < 11200) //两个超声的机器（旧机器）为8500，三个超声的机器（新机器）为11200
+    {
+      ROS_INFO("cloud_plane->size ERR.%d",cloud_plane->size());
+      return;
+    }
+
     tf::Quaternion tf_qua = computeDepthCameraOrientation(cloud_plane);
-    transform_.setRotation(tf_qua);
 
-    // transform the cloud of obstacle to base frame;
-    baseTcloud_eigen_.setIdentity();
-    baseTcloud_eigen_.block(0, 0, 3, 3) = Eigen::Quaternionf(tf_qua.getW(), tf_qua.getX(), tf_qua.getY(),tf_qua.getZ()).toRotationMatrix();
-    baseTcloud_eigen_(0, 3) = transform_.getOrigin().getX();
-    baseTcloud_eigen_(1, 3) = transform_.getOrigin().getY();
-    baseTcloud_eigen_(2, 3) = transform_.getOrigin().getZ();
+    double roll_new, pitch_new, yaw_new;
+    tf::Matrix3x3(tf_qua).getRPY(roll_new, pitch_new, yaw_new);
 
-    compute_camera_tf_time_ = ros::Time::now();
+    if(first_compute_)
+    {
+//      if(fabs(pitch_new+2) > M_PI_4)
+//      {
+//        ROS_WARN("pitch_new err.%f",pitch_new);
+//        return;
+//      }
+      transform_.setRotation(tf_qua);
+      first_compute_ = false;
+    }
+
+    double roll_old, pitch_old, yaw_old;
+    tf::Matrix3x3(transform_.getRotation()).getRPY(roll_old, pitch_old, yaw_old);
+
+    if(fabs(roll_old-roll_new) < adjustment_range_)
+    {
+      transform_.setRotation(tf_qua);
+      // transform the cloud of obstacle to base frame;
+      baseTcloud_eigen_.setIdentity();
+      baseTcloud_eigen_.block(0, 0, 3, 3) = Eigen::Quaternionf(tf_qua.getW(), tf_qua.getX(), tf_qua.getY(),tf_qua.getZ()).toRotationMatrix();
+      baseTcloud_eigen_(0, 3) = transform_.getOrigin().getX();
+      baseTcloud_eigen_(1, 3) = transform_.getOrigin().getY();
+      baseTcloud_eigen_(2, 3) = transform_.getOrigin().getZ();
+      compute_camera_tf_time_ = ros::Time::now();
+    }
   }
   broadcaster_.sendTransform(tf::StampedTransform(transform_, depth_msg->header.stamp, this->slice_param_.frame_base, depth_msg->header.frame_id));
 

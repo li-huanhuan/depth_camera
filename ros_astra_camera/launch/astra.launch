@@ -123,6 +123,7 @@
        <param name="frame_base" value="base_link" />
        <param name="frame_depth_cam" value="camera_rgb_optical_frame" />
        <param name="slice_x" value="1.5" />
+       <!--<param name="slice_x" value="1.0" />--> <!-- 两个超声波的机器（旧机器）-->
        <param name="slice_y" value="1.0" />
        <param name="slice_z_min" value="0.03" />
        <param name="slice_z_max" value="0.30" />
@@ -130,6 +131,7 @@
        <param name="tf_t_x" value="0.207" />
        <param name="tf_t_y" value="0.0" />
        <param name="tf_t_z" value="0.784" />
+       <!--<param name="tf_t_z" value="0.765" />--> <!-- 两个超声波的机器（旧机器） -->
      </node>
 
   </group> <!-- camera -->
