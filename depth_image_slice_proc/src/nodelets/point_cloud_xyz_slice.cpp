@@ -65,7 +65,7 @@ class PointCloudXyzSliceNodelet : public nodelet::Nodelet
 
   Eigen::Matrix3f computeRotationMatrix(Eigen::Vector3f vec_n, Eigen::Vector3f Z);
 
-  tf::Quaternion computeDepthCameraOrientation(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_plane);
+  bool computeDepthCameraOrientation(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_plane, tf::Quaternion& );
 
   void depthCb(const sensor_msgs::ImageConstPtr& depth_msg, const sensor_msgs::CameraInfoConstPtr& info_msg);
 };
@@ -153,10 +153,8 @@ Eigen::Matrix3f PointCloudXyzSliceNodelet::computeRotationMatrix(Eigen::Vector3f
   return R;
 }
 
-tf::Quaternion PointCloudXyzSliceNodelet::computeDepthCameraOrientation(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_plane)
+bool PointCloudXyzSliceNodelet::computeDepthCameraOrientation(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_plane, tf::Quaternion& q_baseTcam)
 {
-  tf::Quaternion q_baseTcam;
-
   // compute the normal vector for the plane;
   int N = cloud_plane->points.size();
   Eigen::MatrixXf X = Eigen::MatrixXf::Zero(3, N);
@@ -182,8 +180,14 @@ tf::Quaternion PointCloudXyzSliceNodelet::computeDepthCameraOrientation(pcl::Poi
 
   Eigen::Vector3f lambda = svd.singularValues();
   Eigen::Matrix3f U = svd.matrixU();
-  Eigen::Vector3f vec_in_plane = U.col(0);
+//  Eigen::Vector3f vec_in_plane = U.col(0);
   Eigen::Vector3f vec_n = U.col(2);
+
+  if(vec_n[2] < 0)
+  {
+    return false;
+  }
+
   vec_n *= -1;
 
   // compute the rotation matrix from the plane normal vector to z-axis of base frame;
@@ -201,7 +205,7 @@ tf::Quaternion PointCloudXyzSliceNodelet::computeDepthCameraOrientation(pcl::Poi
   tf::Quaternion q_y_forwards = tf::createQuaternionFromYaw(-M_PI * 0.5);
   q_baseTcam = q_y_forwards * q_z_forwards;
 
-  return q_baseTcam;
+  return true;
 }
 
 void PointCloudXyzSliceNodelet::depthCb(const sensor_msgs::ImageConstPtr& depth_msg, const sensor_msgs::CameraInfoConstPtr& info_msg)
@@ -270,6 +274,10 @@ void PointCloudXyzSliceNodelet::depthCb(const sensor_msgs::ImageConstPtr& depth_
     msg_cloud_obstacle_slice->row_step = 0;
     msg_cloud_obstacle_slice->is_dense = true;
     pub_point_slice_.publish(msg_cloud_obstacle_slice);
+    if(!first_compute_)
+    {
+      broadcaster_.sendTransform(tf::StampedTransform(transform_, depth_msg->header.stamp, this->slice_param_.frame_base, depth_msg->header.frame_id));
+    }
     return;
   }
 
@@ -298,43 +306,43 @@ void PointCloudXyzSliceNodelet::depthCb(const sensor_msgs::ImageConstPtr& depth_
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_plane(new pcl::PointCloud<pcl::PointXYZ>());
     extract_indices_plane.filter(*cloud_plane);
 
-    if(first_compute_ && cloud_plane->size() < 11200) //两个超声的机器（旧机器）为8500，三个超声的机器（新机器）为11200
+    if(first_compute_ && cloud_plane->size() < 8000) //两个超声的机器（旧机器）为8500，三个超声的机器（新机器）为11200
     {
-      ROS_INFO("cloud_plane->size ERR.%d",cloud_plane->size());
       return;
     }
 
-    tf::Quaternion tf_qua = computeDepthCameraOrientation(cloud_plane);
-
-    double roll_new, pitch_new, yaw_new;
-    tf::Matrix3x3(tf_qua).getRPY(roll_new, pitch_new, yaw_new);
-
-    if(first_compute_)
+    if(cloud_plane->size() > 5000)
     {
-//      if(fabs(pitch_new+2) > M_PI_4)
-//      {
-//        ROS_WARN("pitch_new err.%f",pitch_new);
-//        return;
-//      }
-      transform_.setRotation(tf_qua);
-      first_compute_ = false;
-    }
+      tf::Quaternion tf_qua;
+      if( computeDepthCameraOrientation(cloud_plane, tf_qua) )
+      {
+        double roll_new, pitch_new, yaw_new;
+        tf::Matrix3x3(tf_qua).getRPY(roll_new, pitch_new, yaw_new);
 
-    double roll_old, pitch_old, yaw_old;
-    tf::Matrix3x3(transform_.getRotation()).getRPY(roll_old, pitch_old, yaw_old);
+        if(first_compute_)
+        {
+          transform_.setRotation(tf_qua);
+          first_compute_ = false;
+        }
 
-    if(fabs(roll_old-roll_new) < adjustment_range_)
-    {
-      transform_.setRotation(tf_qua);
-      // transform the cloud of obstacle to base frame;
-      baseTcloud_eigen_.setIdentity();
-      baseTcloud_eigen_.block(0, 0, 3, 3) = Eigen::Quaternionf(tf_qua.getW(), tf_qua.getX(), tf_qua.getY(),tf_qua.getZ()).toRotationMatrix();
-      baseTcloud_eigen_(0, 3) = transform_.getOrigin().getX();
-      baseTcloud_eigen_(1, 3) = transform_.getOrigin().getY();
-      baseTcloud_eigen_(2, 3) = transform_.getOrigin().getZ();
-      compute_camera_tf_time_ = ros::Time::now();
+        double roll_old, pitch_old, yaw_old;
+        tf::Matrix3x3(transform_.getRotation()).getRPY(roll_old, pitch_old, yaw_old);
+
+        if(fabs(roll_old-roll_new) < adjustment_range_)
+        {
+          transform_.setRotation(tf_qua);
+          // transform the cloud of obstacle to base frame;
+          baseTcloud_eigen_.setIdentity();
+          baseTcloud_eigen_.block(0, 0, 3, 3) = Eigen::Quaternionf(tf_qua.getW(), tf_qua.getX(), tf_qua.getY(),tf_qua.getZ()).toRotationMatrix();
+          baseTcloud_eigen_(0, 3) = transform_.getOrigin().getX();
+          baseTcloud_eigen_(1, 3) = transform_.getOrigin().getY();
+          baseTcloud_eigen_(2, 3) = transform_.getOrigin().getZ();
+          compute_camera_tf_time_ = ros::Time::now();
+        }
+      }
     }
   }
+
   broadcaster_.sendTransform(tf::StampedTransform(transform_, depth_msg->header.stamp, this->slice_param_.frame_base, depth_msg->header.frame_id));
 
   // 过滤掉地面之后;

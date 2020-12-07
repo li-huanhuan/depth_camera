@@ -253,7 +253,7 @@ void DepthCameraLayer::pointCloud2Callback(const sensor_msgs::PointCloud2ConstPt
   }
   catch (...)
   {
-    ROS_ERROR("epthCameraLayer::pointCloud2Callback err.");
+    ROS_ERROR("depthCameraLayer::pointCloud2Callback err.");
     return;
   }
   global_cloud.header.stamp = cloud.header.stamp;
